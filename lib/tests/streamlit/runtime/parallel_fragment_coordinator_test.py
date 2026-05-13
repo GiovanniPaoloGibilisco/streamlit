@@ -239,3 +239,14 @@ class ParallelFragmentCoordinatorTest(unittest.TestCase):
         c = ParallelFragmentCoordinator(yield_check=lambda: None)
         c.drain()
         c.join()
+
+    def test_submit_after_shutdown_rolls_back_outstanding(self):
+        """If ``submit()`` races with a concurrent ``drain()`` and the
+        executor is already shut down, the outstanding counter must be
+        rolled back; otherwise a future ``join()`` on the (single-use,
+        but defensively coded) coordinator would hang forever."""
+        c = ParallelFragmentCoordinator(yield_check=lambda: None)
+        c.drain()
+        with pytest.raises(RuntimeError):
+            c.submit(lambda: None)
+        assert c._outstanding == 0

@@ -207,7 +207,16 @@ class ParallelFragmentCoordinator:
                 with self._outstanding_lock:
                     self._outstanding -= 1
 
-        self._executor.submit(tracked)
+        try:
+            self._executor.submit(tracked)
+        except RuntimeError:
+            # Executor was shut down (e.g. drain() raced with a nested
+            # submit). tracked() will never run, so roll back the
+            # increment to keep _outstanding accurate for any future
+            # join() call on this coordinator.
+            with self._outstanding_lock:
+                self._outstanding -= 1
+            raise
 
     def request_stop(self) -> None:
         """Record an st.stop() from a worker. First writer wins."""

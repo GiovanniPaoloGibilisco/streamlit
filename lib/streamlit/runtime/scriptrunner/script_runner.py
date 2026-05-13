@@ -467,10 +467,17 @@ class ScriptRunner:
             # enqueues a new ForwardEvent
             return
 
-        # Re-raise a worker's RerunException/StopException with its original
-        # type (and rerun data, if any). Worker-initiated cancellation takes
-        # precedence over an incoming external request — the worker already
-        # captured the user intent.
+        # Before consulting _requests, surface any cancellation a parallel
+        # fragment worker initiated (st.stop() / st.rerun(scope="app") in a
+        # worker thread). Workers can't raise their own exceptions across
+        # threads, so they store them on the coordinator and the script
+        # thread re-raises here at its next yield point. We re-raise with
+        # the original type — and original RerunData, if any — so the
+        # script runner's outer rerun loop sees the right request type.
+        # Worker-initiated cancellation takes precedence over a concurrent
+        # external request from _requests: the worker already captured the
+        # user intent in-band, while _requests only reflects whatever the
+        # frontend has sent so far.
         ctx = get_script_run_ctx(suppress_warning=True)
         if ctx is not None and ctx.parallel_coordinator is not None:
             worker_exc = ctx.parallel_coordinator.worker_exception
@@ -741,7 +748,11 @@ class ScriptRunner:
                             else:
                                 exec(code, module.__dict__)  # noqa: S102
                             coordinator.join()
-                        except (RerunException, StopException):
+                        except BaseException:
+                            # Drain on ANY escape (RerunException/StopException
+                            # from worker- or script-initiated cancellation,
+                            # uncaught user exceptions, KeyboardInterrupt, ...)
+                            # so in-flight workers don't outlive the run.
                             coordinator.drain()
                             raise
                         self._fragment_storage.clear(
