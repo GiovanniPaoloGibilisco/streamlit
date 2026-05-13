@@ -17,8 +17,10 @@ from __future__ import annotations
 import contextlib
 import inspect
 import threading
+import time
 from abc import abstractmethod
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import wraps
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeVar, overload
@@ -161,6 +163,109 @@ class MemoryFragmentStorage(FragmentStorage):
             "MemoryFragmentStorage does not support copy; "
             "it holds a threading.Lock and shared mutable state."
         )
+
+
+class ParallelFragmentCoordinator:
+    """Manages the lifecycle of parallel fragment workers for one script run.
+
+    Owned by ScriptRunContext (created in ctx.reset()) and exposed as
+    ctx.parallel_coordinator. The coordinator is single-use: a fresh
+    instance is created at the start of every script run, joined or drained
+    before the run ends, and discarded.
+    """
+
+    def __init__(
+        self,
+        yield_check: Callable[[], None],
+        max_workers: int | None = None,
+        poll_interval: float = 0.1,
+    ) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._outstanding = 0
+        self._outstanding_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._worker_exception: RerunException | StopException | None = None
+        self._exception_lock = threading.Lock()
+        self._yield_check = yield_check
+        self._poll_interval = poll_interval
+
+    def submit(self, fn: Callable[..., Any], *args: Any) -> None:
+        """Submit a worker function to the thread pool.
+
+        Increments the outstanding counter before submitting so a nested
+        submit() from inside a running worker is visible to join() before
+        the parent's tracked() decrement runs. May be called from any
+        thread (main thread or worker threads for nested fragments).
+        """
+        with self._outstanding_lock:
+            self._outstanding += 1
+
+        def tracked() -> None:
+            try:
+                fn(*args)
+            finally:
+                with self._outstanding_lock:
+                    self._outstanding -= 1
+
+        self._executor.submit(tracked)
+
+    def request_stop(self) -> None:
+        """Record an st.stop() from a worker. First writer wins."""
+        with self._exception_lock:
+            if self._worker_exception is None:
+                self._worker_exception = StopException()
+        self._stop_event.set()
+
+    def request_rerun(self, exc: RerunException) -> None:
+        """Record an st.rerun(scope='app') from a worker. First writer wins."""
+        with self._exception_lock:
+            if self._worker_exception is None:
+                self._worker_exception = exc
+        self._stop_event.set()
+
+    def should_stop(self) -> bool:
+        """Whether worker threads should cooperatively exit at their next
+        yield point.
+        """
+        return self._stop_event.is_set()
+
+    @property
+    def worker_exception(self) -> RerunException | StopException | None:
+        """The exception stored by the first worker to call request_stop()
+        or request_rerun().
+        """
+        return self._worker_exception
+
+    def join(self) -> None:
+        """Block until all outstanding work completes.
+
+        Polls _outstanding (lock-protected) and calls _yield_check() each
+        poll interval so the script thread stays responsive to external
+        RERUN/STOP requests. If a worker stored an exception, raise it
+        instead of returning normally.
+        """
+        while True:
+            with self._outstanding_lock:
+                if self._outstanding == 0:
+                    break
+            self._yield_check()
+            if self._worker_exception is not None:
+                raise self._worker_exception
+            time.sleep(self._poll_interval)
+        if self._worker_exception is not None:
+            raise self._worker_exception
+        self._executor.shutdown(wait=False)
+
+    def drain(self) -> None:
+        """Cleanup join after cancellation.
+
+        Sets the stop event so workers at their next yield point exit, then
+        shuts down the executor synchronously, cancelling queued futures.
+        Does NOT call _yield_check — safe to call from except blocks
+        without risking recursive RerunException/StopException.
+        """
+        self._stop_event.set()
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _fragment(

@@ -65,7 +65,7 @@ from streamlit.source_util import page_sort_key
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from streamlit.runtime.fragment import FragmentStorage
+    from streamlit.runtime.fragment import FragmentStorage, ParallelFragmentCoordinator
     from streamlit.runtime.scriptrunner.script_cache import ScriptCache
     from streamlit.runtime.scriptrunner_utils.script_run_context import (
         OnScriptErrorHandler,
@@ -444,10 +444,18 @@ class ScriptRunner:
         yield points in the script's execution.
         """
         if not self._is_in_script_thread():
-            # We can only handle execution_control_request if we're on the
-            # script execution thread. However, it's possible for deltas to
-            # be enqueued (and, therefore, for this function to be called)
-            # in separate threads, so we check for that here.
+            # Worker thread — check the coordinator's stop event so a
+            # cooperatively-cancelled worker raises at its next yield point.
+            # This branch is hit by every st.* call from a parallel fragment
+            # worker once dispatch lands; until then, _stop_event is never set
+            # and the check is a no-op.
+            ctx = get_script_run_ctx(suppress_warning=True)
+            if (
+                ctx is not None
+                and ctx.parallel_coordinator is not None
+                and ctx.parallel_coordinator.should_stop()
+            ):
+                raise StopException()
             return
 
         if not self._execing:
@@ -456,6 +464,16 @@ class ScriptRunner:
             # we change our state to STOPPED, and a statechange-listener
             # enqueues a new ForwardEvent
             return
+
+        # Re-raise a worker's RerunException/StopException with its original
+        # type (and rerun data, if any). Worker-initiated cancellation takes
+        # precedence over an incoming external request — the worker already
+        # captured the user intent.
+        ctx = get_script_run_ctx(suppress_warning=True)
+        if ctx is not None and ctx.parallel_coordinator is not None:
+            worker_exc = ctx.parallel_coordinator.worker_exception
+            if worker_exc is not None:
+                raise worker_exc
 
         request = self._requests.on_scriptrunner_yield()
         if request is None:
@@ -581,6 +599,7 @@ class ScriptRunner:
                 fragment_ids_this_run=fragment_ids_this_run,
                 cached_message_hashes=rerun_data.cached_message_hashes,
                 context_info=rerun_data.context_info,
+                yield_check=self._maybe_handle_execution_control_request,
             )
 
             self.on_event.send(
@@ -707,10 +726,22 @@ class ScriptRunner:
                                 pass
 
                     else:
-                        if PagesManager.uses_pages_directory:
-                            _mpa_v1(self._main_script_path)
-                        else:
-                            exec(code, module.__dict__)  # noqa: S102
+                        # ctx.reset() always constructs a coordinator before
+                        # code_to_exec runs; cast to drop the Optional for
+                        # the join/drain call sites.
+                        coordinator = cast(
+                            "ParallelFragmentCoordinator",
+                            ctx.parallel_coordinator,
+                        )
+                        try:
+                            if PagesManager.uses_pages_directory:
+                                _mpa_v1(self._main_script_path)
+                            else:
+                                exec(code, module.__dict__)  # noqa: S102
+                            coordinator.join()
+                        except (RerunException, StopException):
+                            coordinator.drain()
+                            raise
                         self._fragment_storage.clear(
                             new_fragment_ids=ctx.new_fragment_ids.snapshot()
                         )

@@ -765,6 +765,21 @@ _create_option(
     type_=str,
 )
 
+_create_option(
+    "runner.parallelMaxWorkers",
+    description="""
+        Maximum number of parallel fragment worker threads per script run.
+        Defaults to Python's ThreadPoolExecutor default
+        (min(32, os.cpu_count() + 4)).
+
+        Note: parallel fragments (@st.fragment(parallel=True)) are not yet
+        available. This option is reserved infrastructure and currently has
+        no effect.
+    """,
+    default_val=None,
+    type_=int,
+)
+
 # Config Section: Server #
 
 _create_section("server", "Settings for the Streamlit server")
