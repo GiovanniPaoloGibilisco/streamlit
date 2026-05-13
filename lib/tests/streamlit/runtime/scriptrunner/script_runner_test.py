@@ -385,10 +385,13 @@ class ScriptRunnerTest(unittest.TestCase):
         """
 
         ctx = MagicMock()
+        # The script-thread yield-point branch of
         # _maybe_handle_execution_control_request reads
-        # ctx.parallel_coordinator.worker_exception during the script-thread
-        # yield-point check; explicitly None so the bare MagicMock doesn't
-        # surface a non-BaseException value.
+        # ctx.parallel_coordinator.worker_exception and re-raises it if
+        # set. Without an explicit None, MagicMock returns a MagicMock,
+        # which raises TypeError ("exceptions must derive from
+        # BaseException") when the production code tries to raise it —
+        # masking the KeyError this test is actually checking for.
         ctx.parallel_coordinator.worker_exception = None
         patched_get_script_run_ctx.return_value = ctx
 
@@ -1085,8 +1088,8 @@ class ScriptRunnerTest(unittest.TestCase):
     def test_worker_thread_yield_check_noop_when_idle(self):
         """A worker thread (attached via add_script_run_ctx) hits the
         worker-thread branch of ``_maybe_handle_execution_control_request``.
-        With no stop requested it must not raise — existing worker-thread
-        paths (e.g. spinner) keep working until parallel dispatch lands."""
+        With no stop requested it must not raise so that existing
+        worker-thread paths (e.g. spinner) keep working."""
         import threading as _threading
 
         from streamlit.runtime.scriptrunner_utils.script_run_context import (

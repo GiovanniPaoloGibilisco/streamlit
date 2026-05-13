@@ -212,8 +212,7 @@ class ScriptRunContext:
 
     def __post_init__(self) -> None:
         # Capture the main script thread's identity so reset() can refuse to
-        # run from worker threads. ScriptRunContext is constructed on the
-        # script thread by ScriptRunner._run_script_thread.
+        # run from worker threads.
         self._main_thread_ident = threading.get_ident()
 
     @property

@@ -243,7 +243,8 @@ class ParallelFragmentCoordinator:
         """The exception stored by the first worker to call request_stop()
         or request_rerun().
         """
-        return self._worker_exception
+        with self._exception_lock:
+            return self._worker_exception
 
     def join(self) -> None:
         """Block until all outstanding work completes.
@@ -252,17 +253,23 @@ class ParallelFragmentCoordinator:
         poll interval so the script thread stays responsive to external
         RERUN/STOP requests. If a worker stored an exception, raise it
         instead of returning normally.
+
+        If join() raises (worker exception or yield-check exception), the
+        executor is left running and the caller is responsible for calling
+        drain() to shut down in-flight workers.
         """
         while True:
             with self._outstanding_lock:
                 if self._outstanding == 0:
                     break
             self._yield_check()
-            if self._worker_exception is not None:
-                raise self._worker_exception
+            stored = self.worker_exception
+            if stored is not None:
+                raise stored
             time.sleep(self._poll_interval)
-        if self._worker_exception is not None:
-            raise self._worker_exception
+        stored = self.worker_exception
+        if stored is not None:
+            raise stored
         self._executor.shutdown(wait=False)
 
     def drain(self) -> None:

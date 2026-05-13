@@ -735,9 +735,9 @@ class ScriptRunner:
                                 pass
 
                     else:
-                        # ctx.reset() always constructs a coordinator before
-                        # code_to_exec runs; cast to drop the Optional for
-                        # the join/drain call sites.
+                        # parallel_coordinator is None until the first
+                        # ctx.reset(), which always runs before this point;
+                        # cast pins that for the type checker.
                         coordinator = cast(
                             "ParallelFragmentCoordinator",
                             ctx.parallel_coordinator,
@@ -749,10 +749,11 @@ class ScriptRunner:
                                 exec(code, module.__dict__)  # noqa: S102
                             coordinator.join()
                         except BaseException:
-                            # Drain on ANY escape (RerunException/StopException
-                            # from worker- or script-initiated cancellation,
-                            # uncaught user exceptions, KeyboardInterrupt, ...)
-                            # so in-flight workers don't outlive the run.
+                            # Always drain so in-flight worker fragments
+                            # don't outlive the script run, regardless of
+                            # whether the escape was a script-control
+                            # exception, an uncaught user error, or an
+                            # interrupt.
                             coordinator.drain()
                             raise
                         self._fragment_storage.clear(

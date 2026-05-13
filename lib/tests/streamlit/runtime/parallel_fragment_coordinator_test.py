@@ -215,8 +215,7 @@ class ParallelFragmentCoordinatorTest(unittest.TestCase):
 
     def test_submit_passes_args(self):
         """submit() forwards positional args to the worker function so
-        callers can capture per-fragment context (the future
-        ``_dispatch_parallel_fragment`` will rely on this)."""
+        callers can capture per-fragment context."""
         c = ParallelFragmentCoordinator(yield_check=lambda: None)
         try:
             captured: list[tuple[int, str]] = []
@@ -243,8 +242,7 @@ class ParallelFragmentCoordinatorTest(unittest.TestCase):
     def test_submit_after_shutdown_rolls_back_outstanding(self):
         """If ``submit()`` races with a concurrent ``drain()`` and the
         executor is already shut down, the outstanding counter must be
-        rolled back; otherwise a future ``join()`` on the (single-use,
-        but defensively coded) coordinator would hang forever."""
+        rolled back so a subsequent ``join()`` doesn't hang."""
         c = ParallelFragmentCoordinator(yield_check=lambda: None)
         c.drain()
         with pytest.raises(RuntimeError):

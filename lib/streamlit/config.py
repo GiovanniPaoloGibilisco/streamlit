@@ -769,12 +769,8 @@ _create_option(
     "runner.parallelMaxWorkers",
     description="""
         Maximum number of parallel fragment worker threads per script run.
-        Defaults to Python's ThreadPoolExecutor default
-        (min(32, os.cpu_count() + 4)).
-
-        Note: parallel fragments (@st.fragment(parallel=True)) are not yet
-        available. This option is reserved infrastructure and currently has
-        no effect.
+        Sizes the per-run thread pool. Defaults to Python's
+        ThreadPoolExecutor default (min(32, os.cpu_count() + 4)).
     """,
     default_val=None,
     type_=int,
