@@ -444,11 +444,13 @@ class ScriptRunner:
         yield points in the script's execution.
         """
         if not self._is_in_script_thread():
-            # Worker thread — check the coordinator's stop event so a
-            # cooperatively-cancelled worker raises at its next yield point.
-            # This branch is hit by every st.* call from a parallel fragment
-            # worker once dispatch lands; until then, _stop_event is never set
-            # and the check is a no-op.
+            # We can only handle execution_control_request if we're on the
+            # script execution thread. However, this function also runs from
+            # parallel fragment worker threads, since deltas enqueued there
+            # flow through _enqueue_forward_msg. On a worker thread we can't
+            # service script-level rerun/stop requests, but we do check the
+            # coordinator so a cooperatively-cancelled worker raises at its
+            # next yield point.
             ctx = get_script_run_ctx(suppress_warning=True)
             if (
                 ctx is not None
