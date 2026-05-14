@@ -1126,6 +1126,36 @@ class ScriptRunnerTest(unittest.TestCase):
         t.join()
         assert worker_errors == []
 
+    @patch("streamlit.runtime.scriptrunner.script_runner.get_script_run_ctx")
+    def test_script_thread_yield_check_worker_exception_wins_over_request(
+        self, patched_get_script_run_ctx
+    ):
+        """On the script-thread branch, a stored worker exception is
+        re-raised before any external RERUN/STOP request from
+        ``ScriptRequests`` is dequeued. The worker's RerunData is preserved
+        so the rerun loop honors the worker's intent, not the external
+        request that arrived concurrently.
+        """
+        worker_rerun_data = RerunData(query_string="from_worker")
+        worker_exc = RerunException(worker_rerun_data)
+
+        ctx = MagicMock()
+        ctx.parallel_coordinator.worker_exception = worker_exc
+        patched_get_script_run_ctx.return_value = ctx
+
+        scriptrunner = TestScriptRunner("good_script.py")
+        # Queue an external rerun request that should NOT win over the
+        # worker's stored exception.
+        external_rerun_data = RerunData(query_string="external")
+        scriptrunner._requests.request_rerun(external_rerun_data)
+
+        with patch.object(scriptrunner, "_is_in_script_thread", return_value=True):
+            scriptrunner._execing = True
+            with pytest.raises(RerunException) as excinfo:
+                scriptrunner._maybe_handle_execution_control_request()
+
+        assert excinfo.value.rerun_data is worker_rerun_data
+
     def test_worker_thread_yield_check_raises_when_stop_requested(self):
         """When the coordinator's stop event is set (e.g. a sibling worker
         called ``request_stop``), the worker-thread branch raises

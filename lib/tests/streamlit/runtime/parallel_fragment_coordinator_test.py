@@ -51,8 +51,10 @@ def _wait_for_outstanding_zero(
             if c._outstanding == 0:
                 return
         time.sleep(0.01)
+    with c._outstanding_lock:
+        last_value = c._outstanding
     raise AssertionError(
-        f"outstanding never reached 0 within {timeout}s (last value: {c._outstanding})"
+        f"outstanding never reached 0 within {timeout}s (last value: {last_value})"
     )
 
 
@@ -209,6 +211,32 @@ class ParallelFragmentCoordinatorTest(unittest.TestCase):
         try:
             with pytest.raises(RerunException):
                 c.join()
+        finally:
+            gate.set()
+            c.drain()
+
+    def test_yield_check_exception_preempts_stored_worker_exception(self):
+        """If both ``_yield_check`` raises and a worker exception is already
+        stored, the yield-check exception wins because ``join()`` calls
+        ``_yield_check()`` before checking ``worker_exception``. This pins
+        the precedence ordering — symmetric to the script-thread branch
+        contract where the worker exception wins over an external
+        ``ScriptRequests`` entry.
+        """
+        external_rerun = RerunException(RerunData(query_string="external"))
+
+        def yield_raises() -> None:
+            raise external_rerun
+
+        c = ParallelFragmentCoordinator(yield_check=yield_raises, poll_interval=0.01)
+        worker_rerun = RerunException(RerunData(query_string="from_worker"))
+        c.request_rerun(worker_rerun)
+        gate = threading.Event()
+        c.submit(lambda: gate.wait(timeout=2.0))
+        try:
+            with pytest.raises(RerunException) as excinfo:
+                c.join()
+            assert excinfo.value is external_rerun
         finally:
             gate.set()
             c.drain()

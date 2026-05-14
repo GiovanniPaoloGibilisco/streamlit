@@ -176,6 +176,10 @@ class ScriptRunContext:
 
     Streamlit code typically retrieves the active ScriptRunContext via the
     `get_script_run_ctx` function.
+
+    Note: ``__post_init__`` adds a ``_main_thread_ident`` attribute that is
+    not declared as a dataclass field; it is used by ``reset()`` to refuse
+    calls from worker threads.
     """
 
     session_id: str
